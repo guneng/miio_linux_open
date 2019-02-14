@@ -2,56 +2,73 @@
  * Simple tcp client, send data and quit
  */
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <sys/un.h>
+#include "miio_agent.h"
 
 #define DATA_MAX	1024
-#define SERVER_IP	"127.0.0.1"
-#define SERVER_PORT	54320
 
 /*
-"{"method":"register","key":"%s"}"
-"{"method":"unregister","key":"%s"}"
-"{"method":"unregister","key":"%s"}"  //if key is null, unregister all*/
+ * "{"method":"register","key":"%s"}"
+ * "{"method":"unregister","key":"%s"}"
+ * "{"method":"unregister","key":"%s"}"  [> if key is null, unregister all <]
+ */
 
 char *reg_template1 = "{\"method\":\"register\",\"key\":\"set_light\"}";
 char *reg_template2 = "{\"method\":\"register\",\"key\":\"set_watermark\"}";
+#if 0
 char *unreg_template1 = "{\"method\":\"unregister\",\"key\":\"keya\"}";
 char *unreg_template2 = "{\"method\":\"unregister\",\"key\":\"keyc\"}";
 char *unreg_template3 = "{\"method\":\"unregister\",\"key\":\"\"}";
+#endif
 
 int main(int argc, char**argv)
 {
-	int sockfd, n;
-	struct sockaddr_in servaddr;
-	char buf[DATA_MAX];
+    int sockfd, n;
+    struct sockaddr_un servaddr;
+    char buf[DATA_MAX];
 
-	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (argc != 2 || !(atoi(argv[1]) > 0)) {
+        printf("Usage: %s number\n", argv[0]);
+        return 1;
+    }
 
-	bzero(&servaddr, sizeof(servaddr));
-	servaddr.sin_family = AF_INET;
-	servaddr.sin_addr.s_addr = inet_addr(SERVER_IP);
-	servaddr.sin_port = htons(SERVER_PORT);
+    sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
 
-	if (connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-		printf("Connect to server error: %s:%d\n", SERVER_IP, SERVER_PORT);
-		return -1;
-	}
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sun_family = AF_UNIX;
+    strcpy(servaddr.sun_path, MIIO_AGENT_SERVER_PATH);
 
-	n = send(sockfd, reg_template1, strlen(reg_template1), 0);
-	printf("reg key:%s send ret : %d\n", reg_template1, n);
+    if (connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+        printf("Connect to server error: %s\n", MIIO_AGENT_SERVER_PATH);
+        return -1;
+    }
 
-	n = send(sockfd, reg_template2, strlen(reg_template2), 0);
-	printf("reg key:%s send ret : %d\n", reg_template2, n);
+    n = send(sockfd, reg_template1, strlen(reg_template1), 0);
+    /* printf("sub key:%s send ret : %d\n", reg_template1, n); */
 
-	while (1) {
-		n = recv(sockfd, buf, sizeof(buf), 0);
-		printf("client1 recv msg is %s\n", buf);
-	}
+    n = send(sockfd, reg_template2, strlen(reg_template2), 0);
+    /* printf("sub key:%s send ret : %d\n", reg_template2, n); */
 
-	return 0;
+    uint32_t address = MIIO_AGENT_CLIENT_ADDRESS(atoi(argv[1]));
+    n = sprintf(buf, "{\"method\":\"bind\",\"address\":%u}", address);
+    n = send(sockfd, buf, n, 0);
+    /* printf("reg address:%s send ret : %d\n", buf, n); */
+
+    while (1) {
+        n = recv(sockfd, buf, sizeof(buf), 0);
+        if (n > 0) {
+            buf[n] = '\0';
+            printf("client %8.8X recv msg is %s\n", address, buf);
+        } else {
+            break;
+        }
+    }
+
+    return 0;
 }
