@@ -1,5 +1,5 @@
 /*
- * Simple tcp client, send data and quit
+ * Simple agent client for your reference.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -38,7 +38,7 @@ int main(int argc, char**argv)
         return 1;
     }
 
-    sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    sockfd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
 
     memset(&servaddr, 0, sizeof(servaddr));
     servaddr.sun_family = AF_UNIX;

@@ -33,8 +33,9 @@
 # define OT_SERVER_PORT 54322
 #endif
 
-#define OT_RECV_BUFSIZE (4*2048)
-#define OT_SEND_BUFSIZE (2*2048)
+#ifndef OT_RECV_BUFSIZE
+# define OT_RECV_BUFSIZE (4*MIIO_AGENT_MAX_MSG_LEN)
+#endif
 
 #define OT_CONN_RETRY_INTERVAL 5000 /* 5s */
 
@@ -550,84 +551,6 @@ static int general_send_one(int sock, const char *buf, int size)
 }
 
 /**
- * handle messages from miot
- **/
-static int ot_msg_handler(miio_agent_t agent, json_parser_t parser)
-{
-    int ret = 0;
-
-    int32_t id;
-
-    /* 1. check if in session */
-    if (0 == json_get_key_value_int32(parser, NULL, "id", &id)) {
-        struct id_node *p;
-        static uint32_t last_sec = 0;
-        uint32_t now = time(NULL);
-
-        if (now != last_sec) {
-            id_tree_update(&agent->ot_client.id_tree, now);
-        }
-
-        if (0 == id_search(&agent->ot_client.id_tree, id, &p)) {
-            int32_t old_id;
-            int fd, msg_len;
-            const char *newmsg;
-
-            //get old id and fd
-            old_id = p->old_id;
-            fd = p->fd;
-            /* remove id node from tree */
-            rb_erase(&p->node, &agent->ot_client.id_tree);
-            free(p);
-
-            /* restore with old id */
-            json_delete_key(parser, NULL, "id");
-            json_insert_key_value_int32(parser, NULL, "id", old_id);
-            newmsg = json_parser_to_string(parser);
-            msg_len = strlen(newmsg);
-
-            log_printf(LOG_DEBUG, "D:ACK, new_id:%d, old_id:%d, fd:%d,length: %d\n",
-                    id, old_id, fd, msg_len);
-            return general_send_one(fd, newmsg, msg_len);
-        }
-    }
-
-    /* 2. chech if registered */
-    {
-        char method[MIIO_AGENT_MAX_KEY_LEN];
-        if (0 == json_get_key_value_string(parser, NULL, "method", method, sizeof(method))) {
-            struct key_node *p;
-            const char *msg;
-            int msg_len;
-
-            if (0 == key_search(&agent->ot_client.key_tree, method, &p)) {
-                int i = 0;
-                while (i < MIIO_AGENT_CLIENT_MAX_NUM && p->fd[i] > 0) {
-                    msg = json_parser_to_string(parser);
-                    msg_len = strlen(msg);
-                    ret |= general_send_one(p->fd[i], msg, msg_len);
-                    log_printf(LOG_DEBUG,"D:cmd,fd:%d, len:%d\n",  p->fd[i], msg_len);
-                    i++;
-                }
-
-            } else {
-                msg = json_parser_to_string(parser);
-                log_printf(LOG_WARNING,"no sockfd is registered, msg is %s\n",  msg);
-            }
-
-            return ret;
-
-        } else { /* others */
-            const char *msg;
-            msg = json_parser_to_string(parser);
-            log_printf(LOG_WARNING,"invaild msg, drop: %s\n", msg);
-        }
-    }
-
-    return ret;
-}
-
-/**
  * handle messages from local client
  *
  * parse msg, if id exist, means this msg need ack, should linked to list.
@@ -809,83 +732,6 @@ _DONE_LOCAL_MSG_CONSUME:
     return ret;
 }
 
-/*
- * receive msgs from miot or clientfd, and consume each rpc.
- * return 0 on sucess, -1 on socket error.
- */
-static int message_consume(miio_agent_t agent, int fd)
-{
-    static char buf[OT_RECV_BUFSIZE];
-    int msg_len = 0;
-    int i = 0;
-
-    do {
-        int nlen;
-        int start = -1, end = -1;
-        int lbraces = 0, rbraces = 0;
-
-        nlen = read(fd, buf + msg_len, OT_RECV_BUFSIZE - msg_len);
-        if(nlen < 0) {
-            if(errno == EAGAIN) {
-                break;
-            }else{
-                log_e("read");
-                return -1;
-            }
-        } else if (nlen == 0) {
-            log_e("connect");
-            return -1;
-        } else {
-            msg_len += nlen;
-        }
-
-        /* consume msg */
-        while(i < msg_len) { /* search entire prc */
-            /* locate start and left */
-            if (buf[i] == '{') {
-                if(lbraces == 0)
-                    start = i;
-                lbraces++;
-            }
-            /* locate right and end */
-            if (buf[i] == '}') {
-                rbraces++;
-                if(rbraces == lbraces) {
-                    end = i;
-
-                    {
-                        json_parser_t parser = json_parser_new(&buf[start], end-start+1);
-                        if (parser == NULL) {
-                            buf[end-start] = '\0';
-                            log_printf(LOG_WARNING, "%s: Not in json format: %s\n", __func__, buf);
-                            break;
-                        }
-
-                        if (fd == agent->ot_client.fd) {
-                            ot_msg_handler(agent, parser);
-                        } else { /* local client */
-                            if(-128 == local_msg_handler(fd, agent, parser)) {
-                                json_parser_free(parser);
-                                return -1;
-                            }
-                        }
-
-                        json_parser_free(parser);
-                    }
-
-                    end = start = -1;
-                    lbraces = rbraces = 0;
-                }
-            }
-
-            i++;
-        }
-
-    } while (1);
-
-    return 0;
-}
-
 /* --------------------------------------------------------------------- local server */
 static void local_server_message_callback(int fd, uint32_t events, void *user_data);
 
@@ -895,7 +741,7 @@ static int local_server_start(miio_agent_t agent)
     int agent_listenfd;
     int ret = -1, on = 1;
 
-    agent_listenfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    agent_listenfd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
     if (agent_listenfd < 0) {
         log_e("create socket : %m");
         return -1;
@@ -940,6 +786,53 @@ static int local_server_start(miio_agent_t agent)
     return 0;
 }
 
+/*
+ * receive rpc from local client and consume.
+ * return 0 on sucess, -1 on socket error.
+ */
+static int local_message_consume(miio_agent_t agent, int fd)
+{
+    static char buf[MIIO_AGENT_MAX_MSG_LEN] = {0};
+
+    do {
+        int nlen;
+
+        nlen = read(fd, buf, MIIO_AGENT_MAX_MSG_LEN);
+        if(nlen < 0) {
+            if(errno == EAGAIN) {
+                break;
+            }else{
+                log_e("read");
+                return -1;
+            }
+        } else if (nlen == 0) {
+            log_e("connect");
+            return -1;
+        } else {
+        }
+
+        /* consume msg */
+        {
+            json_parser_t parser = json_parser_new(buf, nlen);
+            if (parser == NULL) {
+                buf[nlen-1] = '\0';
+                log_printf(LOG_WARNING, "%s: Not in json format: %s\n", __func__, buf);
+                break;
+            }
+
+            if(-128 == local_msg_handler(fd, agent, parser)) {
+                json_parser_free(parser);
+                return -1;
+            }
+
+            json_parser_free(parser);
+        }
+
+    } while (1);
+
+    return 0;
+}
+
 static void local_client_message_callback(int fd, uint32_t events, void *user_data)
 {
     miio_agent_t agent = (miio_agent_t)user_data;
@@ -950,7 +843,7 @@ static void local_client_message_callback(int fd, uint32_t events, void *user_da
         goto _LOCAL_CONN_ERROR;
 
     } else if ((events & EPOLLIN)) {
-        if(0 != message_consume(agent, fd)) {
+        if(0 != local_message_consume(agent, fd)) {
             log_e("client socket %d", fd);
             goto _LOCAL_CONN_ERROR;
         }
@@ -1047,13 +940,15 @@ static int ot_connect(miio_agent_t agent)
     { /* config socket */
         int on = 1;
         int recv_buffer_len = OT_RECV_BUFSIZE;
-        int send_buffer_len = OT_SEND_BUFSIZE;
 
         ioctl(agent->ot_client.fd, FIONBIO, &on);
 
-        if(setsockopt(agent->ot_client.fd, SOL_SOCKET, SO_RCVBUF, &recv_buffer_len, sizeof(int))
-                || setsockopt(agent->ot_client.fd, SOL_SOCKET, SO_SNDBUF, &send_buffer_len, sizeof(int)))
+        if(ioctl(agent->ot_client.fd, FIONBIO, &on)
+                || setsockopt(agent->ot_client.fd, SOL_SOCKET, SO_RCVBUF, &recv_buffer_len, sizeof(int))) {
+            close(agent->ot_client.fd);
+            log_e("config");
             return -3;
+        }
     }
 
     if(mainloop_add_fd(agent->ot_client.fd, EPOLLIN|EPOLLET, ot_message_callback, agent, NULL))
@@ -1089,6 +984,154 @@ static void ot_timer_reconnect(miio_agent_t agent)
     assert(!(agent->ot_client.retry_timer_fd < 0));
 }
 
+/**
+ * handle messages from miot
+ **/
+static int ot_msg_handler(miio_agent_t agent, json_parser_t parser)
+{
+    int ret = 0;
+
+    int32_t id;
+
+    /* 1. check if in session */
+    if (0 == json_get_key_value_int32(parser, NULL, "id", &id)) {
+        struct id_node *p;
+        static uint32_t last_sec = 0;
+        uint32_t now = time(NULL);
+
+        if (now != last_sec) {
+            id_tree_update(&agent->ot_client.id_tree, now);
+        }
+
+        if (0 == id_search(&agent->ot_client.id_tree, id, &p)) {
+            int32_t old_id;
+            int fd, msg_len;
+            const char *newmsg;
+
+            //get old id and fd
+            old_id = p->old_id;
+            fd = p->fd;
+            /* remove id node from tree */
+            rb_erase(&p->node, &agent->ot_client.id_tree);
+            free(p);
+
+            /* restore with old id */
+            json_delete_key(parser, NULL, "id");
+            json_insert_key_value_int32(parser, NULL, "id", old_id);
+            newmsg = json_parser_to_string(parser);
+            msg_len = strlen(newmsg);
+
+            log_printf(LOG_DEBUG, "D:ACK, new_id:%d, old_id:%d, fd:%d,length: %d\n",
+                    id, old_id, fd, msg_len);
+            return general_send_one(fd, newmsg, msg_len);
+        }
+    }
+
+    /* 2. chech if registered */
+    {
+        char method[MIIO_AGENT_MAX_KEY_LEN];
+        if (0 == json_get_key_value_string(parser, NULL, "method", method, sizeof(method))) {
+            struct key_node *p;
+            const char *msg;
+            int msg_len;
+
+            if (0 == key_search(&agent->ot_client.key_tree, method, &p)) {
+                int i = 0;
+                while (i < MIIO_AGENT_CLIENT_MAX_NUM && p->fd[i] > 0) {
+                    msg = json_parser_to_string(parser);
+                    msg_len = strlen(msg);
+                    ret |= general_send_one(p->fd[i], msg, msg_len);
+                    log_printf(LOG_DEBUG,"D:cmd,fd:%d, len:%d\n",  p->fd[i], msg_len);
+                    i++;
+                }
+
+            } else {
+                msg = json_parser_to_string(parser);
+                log_printf(LOG_WARNING,"no sockfd is registered, msg is %s\n",  msg);
+            }
+
+            return ret;
+
+        } else { /* others */
+            const char *msg;
+            msg = json_parser_to_string(parser);
+            log_printf(LOG_WARNING,"invaild msg, drop: %s\n", msg);
+        }
+    }
+
+    return ret;
+}
+
+/*
+ * receive msgs from miio_client, and consume each rpc.
+ * return 0 on sucess, -1 on socket error.
+ */
+static int ot_message_consume(miio_agent_t agent, int fd)
+{
+    static char buf[OT_RECV_BUFSIZE] = {0};
+    int msg_len = 0;
+    int i = 0;
+
+    do {
+        int nlen;
+        int start = -1, end = -1;
+        int lbraces = 0, rbraces = 0;
+
+        nlen = read(fd, buf + msg_len, OT_RECV_BUFSIZE - msg_len);
+        if(nlen < 0) {
+            if(errno == EAGAIN) {
+                break;
+            }else{
+                log_e("read");
+                return -1;
+            }
+        } else if (nlen == 0) {
+            log_e("connect");
+            return -1;
+        } else {
+            msg_len += nlen;
+        }
+
+        /* consume msg */
+        while(i < msg_len) { /* search entire prc */
+            /* locate start and left */
+            if (buf[i] == '{') {
+                if(lbraces == 0)
+                    start = i;
+                lbraces++;
+            }
+            /* locate right and end */
+            if (buf[i] == '}') {
+                rbraces++;
+                if(rbraces == lbraces) {
+                    end = i;
+
+                    {
+                        json_parser_t parser = json_parser_new(&buf[start], end-start+1);
+                        if (parser == NULL) {
+                            buf[end-start] = '\0';
+                            log_printf(LOG_WARNING, "%s: Not in json format: %s\n", __func__, buf);
+                            break;
+                        }
+
+                        ot_msg_handler(agent, parser);
+
+                        json_parser_free(parser);
+                    }
+
+                    end = start = -1;
+                    lbraces = rbraces = 0;
+                }
+            }
+
+            i++;
+        }
+
+    } while (1);
+
+    return 0;
+}
+
 static void ot_message_callback(int fd, uint32_t events, void *user_data)
 {
     miio_agent_t agent = (miio_agent_t)user_data;
@@ -1099,7 +1142,7 @@ static void ot_message_callback(int fd, uint32_t events, void *user_data)
         goto _OT_CONN_ERROR;
 
     } else if ((events & EPOLLIN)) {
-        if (0 != message_consume(agent, fd)) {
+        if (0 != ot_message_consume(agent, fd)) {
             log_e("sock");
             goto _OT_CONN_ERROR;
         }
