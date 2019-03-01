@@ -690,7 +690,7 @@ static int local_msg_handler(int sockfd, miio_agent_t agent, json_parser_t parse
 
             /* replace with new id */
             json_delete_key(parser, NULL, "id");
-            json_insert_key_value_int32(parser, NULL, "id", old_id);
+            json_insert_key_value_int32(parser, NULL, "id", new_id);
             newmsg = json_parser_to_string(parser);
             msg_len = strlen(newmsg);
 
@@ -792,7 +792,7 @@ static int local_server_start(miio_agent_t agent)
  */
 static int local_message_consume(miio_agent_t agent, int fd)
 {
-    static char buf[MIIO_AGENT_MAX_MSG_LEN] = {0};
+    static char buf[MIIO_AGENT_MAX_MSG_LEN+1] = {0};
 
     do {
         int nlen;
@@ -815,7 +815,7 @@ static int local_message_consume(miio_agent_t agent, int fd)
         {
             json_parser_t parser = json_parser_new(buf, nlen);
             if (parser == NULL) {
-                buf[nlen-1] = '\0';
+                buf[nlen] = '\0';
                 log_printf(LOG_WARNING, "%s: Not in json format: %s\n", __func__, buf);
                 break;
             }
@@ -1068,7 +1068,7 @@ static int ot_msg_handler(miio_agent_t agent, json_parser_t parser)
  */
 static int ot_message_consume(miio_agent_t agent, int fd)
 {
-    static char buf[OT_RECV_BUFSIZE] = {0};
+    static char buf[OT_RECV_BUFSIZE+1] = {0};
     int msg_len = 0;
     int i = 0;
 
@@ -1109,7 +1109,7 @@ static int ot_message_consume(miio_agent_t agent, int fd)
                     {
                         json_parser_t parser = json_parser_new(&buf[start], end-start+1);
                         if (parser == NULL) {
-                            buf[end-start] = '\0';
+                            buf[end-start+1] = '\0';
                             log_printf(LOG_WARNING, "%s: Not in json format: %s\n", __func__, buf);
                             break;
                         }
