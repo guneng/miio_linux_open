@@ -23,4 +23,4 @@
     * the max number of clients to be supported is 32, all unicast, multicast, broadcast supported.
 
 2. send/recv
-    - for local json rpc, send insert `"_to:%u`, recv insert `"_from:%u`
+    - for local json rpc, send insert `"_to":%u`, recv insert `"_from":%u`
