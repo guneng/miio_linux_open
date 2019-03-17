@@ -71,6 +71,7 @@ static FILE *s_log_file;
 static log_level_t s_loglevel = LOG_INFO;
 
 #define log_e(__fmt, ...) log_printf(LOG_ERROR, "%d "__fmt"\n", __LINE__, ##__VA_ARGS__)
+#define log_d(__fmt, ...) log_printf(LOG_DEBUG, "%d "__fmt"\n", __LINE__, ##__VA_ARGS__)
 
 /* --------------------------------------------------------------------- logger */
 static int logfile_init(char *filename)
@@ -137,7 +138,7 @@ static json_parser_t json_parser_new(const char *msg, size_t msg_len)
         if(!parser->tok)
             goto _ERROR_JSON_PARSER_NEW;
         parser->root_obj = json_tokener_parse_ex(parser->tok, msg, msg_len);
-        if(!parser->root_obj)
+        if(!parser->root_obj || !json_object_is_type(parser->root_obj, json_type_object))
             goto _ERROR_JSON_PARSER_NEW;
     }
 
@@ -181,6 +182,31 @@ static int json_get_key_value_int32(json_parser_t parser, void *obj_parent, cons
             return -2;
 
         *value =  json_object_get_int(obj_parent);
+    }
+
+    return 0;
+}
+
+CC_INLINE
+static int json_get_key_value_int64(json_parser_t parser, void *obj_parent, const char *key, int64_t *value)
+{
+    struct json_object *tmp_obj;
+
+    if(!obj_parent)
+        obj_parent = parser->root_obj;
+
+    if (key) { /* parse key */
+        if(!json_object_object_get_ex(obj_parent, key, &tmp_obj))
+            return -1;
+
+        obj_parent = tmp_obj;
+    }
+
+    if (value) {
+        if(!json_object_is_type(obj_parent, json_type_int))
+            return -2;
+
+        *value =  json_object_get_int64(obj_parent);
     }
 
     return 0;
@@ -562,12 +588,12 @@ static int local_msg_handler(int sockfd, miio_agent_t agent, json_parser_t parse
     int ret = 0;
 
     /* 1. if have "_to", local forward */
-    if (0 == json_get_key_value_int32(parser, NULL, "_to", NULL)) {
+    if (0 == json_get_key_value_int64(parser, NULL, "_to", NULL)) {
         uint32_t addr;
         uint32_t from = 0;
         int i;
 
-        if (0 != json_get_key_value_int32(parser, NULL, "_to", (int32_t*)&addr)) {
+        if (0 != json_get_key_value_int64(parser, NULL, "_to", (int64_t*)&addr)) {
             log_e("invaild addr");
             ret = -1;
             goto _DONE_LOCAL_MSG_CONSUME;
@@ -642,7 +668,7 @@ static int local_msg_handler(int sockfd, miio_agent_t agent, json_parser_t parse
         } else if (memcmp(method, "bind", strlen("bind")) == 0) {
             uint32_t addr;
             int i;
-            if (0 != json_get_key_value_int32(parser, NULL, "address", (int32_t*)&addr)) {
+            if (0 != json_get_key_value_int64(parser, NULL, "address", (int64_t*)&addr)) {
                 log_printf(LOG_WARNING, "%s|%d: invaild addr\n", __func__, __LINE__);
                 ret = -13;
                 goto _DONE_LOCAL_MSG_CONSUME;
@@ -798,6 +824,7 @@ static int local_message_consume(miio_agent_t agent, int fd)
         int nlen;
 
         nlen = read(fd, buf, MIIO_AGENT_MAX_MSG_LEN);
+        log_d("local recv: %d", nlen);
         if(nlen < 0) {
             if(errno == EAGAIN) {
                 break;
@@ -812,11 +839,12 @@ static int local_message_consume(miio_agent_t agent, int fd)
         }
 
         /* consume msg */
-        {
+        do {
             json_parser_t parser = json_parser_new(buf, nlen);
             if (parser == NULL) {
                 buf[nlen] = '\0';
-                log_printf(LOG_WARNING, "%s: Not in json format: %s\n", __func__, buf);
+                log_printf(LOG_WARNING, "%s: Not json object: %s\n", __func__, buf);
+                json_parser_free(parser);
                 break;
             }
 
@@ -826,7 +854,7 @@ static int local_message_consume(miio_agent_t agent, int fd)
             }
 
             json_parser_free(parser);
-        }
+        } while(0);
 
     } while (1);
 
@@ -1021,7 +1049,7 @@ static int ot_msg_handler(miio_agent_t agent, json_parser_t parser)
             newmsg = json_parser_to_string(parser);
             msg_len = strlen(newmsg);
 
-            log_printf(LOG_DEBUG, "D:ACK, new_id:%d, old_id:%d, fd:%d,length: %d\n",
+            log_printf(LOG_DEBUG, "D:ACK, new_id:%d, old_id:%d, fd:%d,len: %d\n",
                     id, old_id, fd, msg_len);
             return general_send_one(fd, newmsg, msg_len);
         }
@@ -1041,7 +1069,7 @@ static int ot_msg_handler(miio_agent_t agent, json_parser_t parser)
                     msg = json_parser_to_string(parser);
                     msg_len = strlen(msg);
                     ret |= general_send_one(p->fd[i], msg, msg_len);
-                    log_printf(LOG_DEBUG,"D:cmd,fd:%d, len:%d\n",  p->fd[i], msg_len);
+                    log_printf(LOG_DEBUG,"D:CMD %s,fd:%d, len:%d\n", method, p->fd[i], msg_len);
                     i++;
                 }
 
@@ -1069,17 +1097,19 @@ static int ot_msg_handler(miio_agent_t agent, json_parser_t parser)
 static int ot_message_consume(miio_agent_t agent, int fd)
 {
     static char buf[OT_RECV_BUFSIZE+1] = {0};
-    int msg_len = 0;
-    int i = 0;
+    int left_len = 0, consume_len = 0;
 
     do {
         int nlen;
-        int start = -1, end = -1;
-        int lbraces = 0, rbraces = 0;
 
-        nlen = read(fd, buf + msg_len, OT_RECV_BUFSIZE - msg_len);
+        nlen = read(fd, buf + left_len, OT_RECV_BUFSIZE - left_len);
+        log_d("ot recv: %d\n", nlen);
         if(nlen < 0) {
-            if(errno == EAGAIN) {
+            if(errno == EAGAIN) { /* done */
+                if (left_len) {
+                    buf[left_len] = '\0';
+                    log_printf(LOG_WARNING, "remain str: %s\n",buf);
+                }
                 break;
             }else{
                 log_e("read");
@@ -1089,43 +1119,30 @@ static int ot_message_consume(miio_agent_t agent, int fd)
             log_e("connect");
             return -1;
         } else {
-            msg_len += nlen;
+            left_len += nlen;
         }
 
-        /* consume msg */
-        while(i < msg_len) { /* search entire prc */
-            /* locate start and left */
-            if (buf[i] == '{') {
-                if(lbraces == 0)
-                    start = i;
-                lbraces++;
-            }
-            /* locate right and end */
-            if (buf[i] == '}') {
-                rbraces++;
-                if(rbraces == lbraces) {
-                    end = i;
-
-                    {
-                        json_parser_t parser = json_parser_new(&buf[start], end-start+1);
-                        if (parser == NULL) {
-                            buf[end-start+1] = '\0';
-                            log_printf(LOG_WARNING, "%s: Not in json format: %s\n", __func__, buf);
-                            break;
-                        }
-
-                        ot_msg_handler(agent, parser);
-
-                        json_parser_free(parser);
-                    }
-
-                    end = start = -1;
-                    lbraces = rbraces = 0;
-                }
+        /* got one packet, try to consume */
+        consume_len = 0;
+        do {
+            json_parser_t parser = json_parser_new(buf+consume_len, left_len);
+            if (parser == NULL) {
+                buf[consume_len+left_len] = '\0';
+                log_printf(LOG_WARNING, "%s: Not json object: %s\n", __func__, buf+consume_len);
+                json_parser_free(parser);
+                break;
             }
 
-            i++;
-        }
+            ot_msg_handler(agent, parser);
+
+            consume_len += parser->tok->char_offset;
+            left_len -= parser->tok->char_offset;
+
+            json_parser_free(parser);
+        } while(left_len);
+
+        if (left_len)
+            memmove(buf, buf + consume_len, left_len);
 
     } while (1);
 
