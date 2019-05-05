@@ -676,12 +676,14 @@ static int local_msg_handler(int sockfd, miio_agent_t agent, json_parser_t parse
 
             for (i = 0; i < MIIO_AGENT_CLIENT_MAX_NUM; i++) {
                 if (addr & (1<<i)) { /* locate slot */
+#if 0 /* bind always */
                     if (agent->local_server.client_fds[i] != -1) { /* bond already */
                         log_e("addr %8.8X used by fd %d",
                                 addr, agent->local_server.client_fds[i]);
                         ret = -128;
                         goto _DONE_LOCAL_MSG_CONSUME;
                     }
+#endif
 
                     agent->local_server.client_fds[i] = sockfd;
                     log_printf(LOG_INFO, "bind addr: %8.8X, fd: %d\n", addr, sockfd);
@@ -843,7 +845,7 @@ static int local_message_consume(miio_agent_t agent, int fd)
             json_parser_t parser = json_parser_new(buf, nlen);
             if (parser == NULL) {
                 buf[nlen] = '\0';
-                log_printf(LOG_WARNING, "%s: Not json object: %s\n", __func__, buf);
+                log_printf(LOG_WARNING, "%d %s: Not json object: %s\n", fd, __func__, buf);
                 json_parser_free(parser);
                 break;
             }
@@ -1129,7 +1131,6 @@ static int ot_message_consume(miio_agent_t agent, int fd)
             if (parser == NULL) {
                 buf[consume_len+left_len] = '\0';
                 log_printf(LOG_WARNING, "%s: Not json object: %s\n", __func__, buf+consume_len);
-                json_parser_free(parser);
                 break;
             }
 
@@ -1141,7 +1142,7 @@ static int ot_message_consume(miio_agent_t agent, int fd)
             json_parser_free(parser);
         } while(left_len);
 
-        if (left_len)
+        if (left_len && consume_len)
             memmove(buf, buf + consume_len, left_len);
 
     } while (1);
