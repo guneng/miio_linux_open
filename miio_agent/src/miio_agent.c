@@ -2,7 +2,6 @@
  * @file miio_agent.c
  * @brief a rpc router, support both local and ot memssage.
  * @author fusichang & rkxie
- * @version 1.2.0
  * @date 2019-01-24
  */
 #include <stdio.h>
@@ -96,7 +95,7 @@ static void log_printf(log_level_t level, const char *fmt, ...)
     struct tm *p;
     char *slevel;
 
-    if (stdout == NULL)
+    if (s_log_file == NULL)
         return;
 
     if (level <= s_loglevel) {
@@ -109,12 +108,14 @@ static void log_printf(log_level_t level, const char *fmt, ...)
             default          : slevel = "[UNKNOWN]"; break;
         }
 
-        now = time(NULL);
-        p = localtime(&now);
-        strftime(buf, 80, "[%Y%m%d %H:%M:%S]", p);
+        if (s_log_file != stdout) {
+            now = time(NULL);
+            p = localtime(&now);
+            strftime(buf, 80, "[%Y%m%d %H:%M:%S]", p);
+            fprintf(s_log_file, "%s %s ", buf, slevel);
+        }
 
         va_start(ap, fmt);
-        fprintf(s_log_file, "%s %s ", buf, slevel);
         vfprintf(s_log_file, fmt, ap);
         va_end(ap);
         fflush(s_log_file);
@@ -826,7 +827,6 @@ static int local_message_consume(miio_agent_t agent, int fd)
         int nlen;
 
         nlen = read(fd, buf, MIIO_AGENT_MAX_MSG_LEN);
-        log_d("local recv: %d", nlen);
         if(nlen < 0) {
             if(errno == EAGAIN) {
                 break;
@@ -839,6 +839,8 @@ static int local_message_consume(miio_agent_t agent, int fd)
             return -1;
         } else {
         }
+
+        log_d("local recv: %d", nlen);
 
         /* consume msg */
         do {
@@ -1105,7 +1107,6 @@ static int ot_message_consume(miio_agent_t agent, int fd)
         int nlen;
 
         nlen = read(fd, buf + left_len, OT_RECV_BUFSIZE - left_len);
-        log_d("ot recv: %d\n", nlen);
         if(nlen < 0) {
             if(errno == EAGAIN) { /* done */
                 if (left_len) {
@@ -1125,6 +1126,8 @@ static int ot_message_consume(miio_agent_t agent, int fd)
         }
 
         /* got one packet, try to consume */
+        log_d("ot recv: %d\n", nlen);
+
         consume_len = 0;
         do {
             json_parser_t parser = json_parser_new(buf+consume_len, left_len);
@@ -1259,6 +1262,8 @@ int main(int argc, char *argv[])
                 exit(1);
         }
     }
+
+    log_printf(LOG_INFO, "Version: %s Build time: %s %s\n", PACKAGE_STRING, __TIME__, __DATE__);
 
     mainloop_init();
 

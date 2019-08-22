@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([miio-agent], [1.2.0], [miot])
+AC_INIT([miio-agent], [1.2.1], [miot])
 AM_INIT_AUTOMAKE([-Wall foreign subdir-objects])
 AC_CONFIG_SRCDIR([src/miio_agent.c])
 AC_CONFIG_HEADERS([config.h])
