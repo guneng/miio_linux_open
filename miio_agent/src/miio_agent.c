@@ -570,7 +570,7 @@ int key_insert(struct rb_root *root, const char *key, int fd)
 	struct key_node *p;
 	p = (struct key_node *)malloc(sizeof(struct key_node));
 	memset(p, 0, sizeof(struct key_node));
-	strcpy(p->key, key);
+	strncpy(p->key, key, sizeof (p->key));
 	p->fd[0] = fd;
 	/* Add new node and rebalance tree. */
 	rb_link_node(&p->node, parent, new);
