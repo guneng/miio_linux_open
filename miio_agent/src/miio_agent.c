@@ -40,7 +40,7 @@ static struct option options[] = {
 	{NULL,		0,			0,	0}
 };
 
-static void sighandler(int sig)
+static void miio_agent_exit(int sig)
 {
 	free_key_tree();
 	free_id_tree();
@@ -50,6 +50,8 @@ static void sighandler(int sig)
 	}
 	if(agent_listenfd > 0)
 		close(agent_listenfd);
+
+	unlink(MIIO_AGENT_IPC_SOCK_PATH);
 
 	log_printf(LOG_ERROR, "miio_agent will be exit\n");
 	exit(-1);
@@ -100,7 +102,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	signal(SIGINT, sighandler);
+	signal(SIGINT, miio_agent_exit);
 	signal(SIGPIPE, SIG_IGN);
 
 	miot_fd = miot_connect_init();
@@ -173,8 +175,7 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
-	free_key_tree();
-	free_id_tree();
+	miio_agent_exit();
 	return 0;
 }
 
@@ -198,47 +199,34 @@ int  miot_connect_init(void)
 	return miot_fd;
 }
 
-int  agent_server_init(void)
+int agent_server_init(void)
 {
 	struct sockaddr_in serveraddr;
 	int agent_listenfd;
 	int ret = -1, on = 1;
 
-	agent_listenfd = socket(AF_INET, SOCK_STREAM, 0);
+	agent_listenfd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
 	if (agent_listenfd < 0) {
 		log_printf(LOG_ERROR, "Create ot server socket error: %s\n",
 			   strerror(errno));
 		return -1;
 	}
 
-	if ((ret = setsockopt(agent_listenfd, SOL_SOCKET, SO_REUSEADDR,
-				  (char *) &on, sizeof(on))) < 0) {
-		log_printf(LOG_ERROR, "OT server setsockopt(SO_REUSEADDR): %m");
-		close(agent_listenfd);
-		return ret;
-	}
+	struct sockaddr_un addr;
+	memset(&addr, 0, sizeof(struct sockaddr_un));
+	strncpy(addr.sun_path, MIIO_AGENT_IPC_SOCK_PATH, sizeof(addr.sun_path) - 1);
 
-	if (ioctl(agent_listenfd, FIONBIO, (char *)&on) < 0) {
-		log_printf(LOG_ERROR, "ioctl FIONBIO failed: %m");
-		close(agent_listenfd);
+	if (bind(agent_listenfd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+		log_printf(LOG_ERROR, "bind ipc server error\n");
 		return -1;
 	}
 
-	memset(&serveraddr, 0, sizeof(serveraddr));
-	serveraddr.sin_family = AF_INET;
-	serveraddr.sin_port = htons(DISPATCHER_SERVER_PORT);
-	serveraddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	if (bind(agent_listenfd, (struct sockaddr *)&serveraddr, sizeof(serveraddr)) < 0) {
-		log_printf(LOG_ERROR, "Socket bind port (%d) error: %s\n",
-			   DISPATCHER_SERVER_PORT, strerror(errno));
-		close(agent_listenfd);
+	if (listen(agent_listenfd, 32) < 0) {
+		log_printf(LOG_ERROR, "listen ipc server error\n");
 		return -1;
 	}
 
-	if (listen(agent_listenfd, 32) == -1) {
-		perror("listen");
-		return -1;
-	}
+	log_printf(LOG_INFO, "Create miio_agent unix socket success\n");
 	return agent_listenfd;
 }
 

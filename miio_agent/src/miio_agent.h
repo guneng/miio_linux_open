@@ -3,6 +3,7 @@
 
 #include "rbtree.h"
 
+#define MIIO_AGENT_IPC_SOCK_PATH	"/tmp/miio_agent.socket"
 #define SERVER_IP	"127.0.0.1"
 #define MIOT_SERVER_PORT	54322
 #define DISPATCHER_SERVER_PORT	54320
